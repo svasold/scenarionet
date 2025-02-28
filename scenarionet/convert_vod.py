@@ -62,6 +62,7 @@ if __name__ == "__main__":
         scenarios, vod = get_vod_prediction_split(
             args.dataroot, version, args.past, args.future, args.num_workers
         )
+    print(len(scenarios))
     write_to_directory(
         convert_func=convert_vod_scenario,
         scenarios=scenarios,

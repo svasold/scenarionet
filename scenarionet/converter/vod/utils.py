@@ -78,13 +78,13 @@ def parse_frame(frame, vod: VOD):
     return ret
 
 
-def interpolate_heading(heading_data, old_valid, new_valid, num_to_interpolate=5):
+def interpolate_heading(heading_data, old_valid, new_valid, num_to_interpolate=1):
     new_heading_theta = np.zeros_like(new_valid)
     for k, valid in enumerate(old_valid[:-1]):
         if abs(valid) > 1e-1 and abs(old_valid[k + 1]) > 1e-1:
             diff = (heading_data[k + 1] - heading_data[k] + np.pi) % (2 * np.pi) - np.pi
             # step = diff
-            interpolate_heading = np.linspace(heading_data[k], heading_data[k] + diff, 6)
+            interpolate_heading = np.linspace(heading_data[k], heading_data[k] + diff, 2)
             new_heading_theta[k * num_to_interpolate:(k + 1) * num_to_interpolate] = interpolate_heading[:-1]
         elif abs(valid) > 1e-1 and abs(old_valid[k + 1]) < 1e-1:
             new_heading_theta[k * num_to_interpolate:(k + 1) * num_to_interpolate] = heading_data[k]
@@ -92,7 +92,7 @@ def interpolate_heading(heading_data, old_valid, new_valid, num_to_interpolate=5
     return new_heading_theta * new_valid
 
 
-def _interpolate_one_dim(data, old_valid, new_valid, num_to_interpolate=5):
+def _interpolate_one_dim(data, old_valid, new_valid, num_to_interpolate=1):
     new_data = np.zeros_like(new_valid)
     for k, valid in enumerate(old_valid[:-1]):
         if abs(valid) > 1e-1 and abs(old_valid[k + 1]) > 1e-1:
@@ -121,7 +121,7 @@ def interpolate(origin_y, valid, new_valid):
     return ret
 
 
-def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=5):
+def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=1):
     episode_len = len(frames)
     # Fill tracks
     all_objs = set()
@@ -182,7 +182,10 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=5):
 
     # interpolate
     interpolate_tracks = {}
+    track_counter = 0
+    track_too_fast_counter = 0
     for id, track, in tracks.items():
+        track_counter += 1
         interpolate_tracks[id] = copy.deepcopy(track)
         interpolate_tracks[id]["metadata"]["track_length"] = new_episode_len
 
@@ -203,16 +206,17 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=5):
         interpolate_tracks[id]["state"]["position"] = interpolate(
             track["state"]["position"], track["state"]["valid"], new_valid
         )
-        if id == "ego" and not scene_info.get("prediction", False):
-            assert "prediction" not in scene_info
-            # We can get it from canbus
-            try:
-                canbus = VODCanBus(dataroot=vod.dataroot)
-                imu_pos = np.asarray([state["pos"] for state in canbus.get_messages(scene_info["name"], "pose")[::5]])
-                min_len = min(len(imu_pos), new_episode_len)
-                interpolate_tracks[id]["state"]["position"][:min_len] = imu_pos[:min_len]
-            except:
-                logger.info("Fail to get canbus data for {}".format(scene_info["name"]))
+        # no CAN bus for view of delf dataset
+        #if id == "ego" and not scene_info.get("prediction", False):
+        #    assert "prediction" not in scene_info
+        #    # We can get it from canbus
+        #    try:
+        #        canbus = VODCanBus(dataroot=vod.dataroot)
+        #        imu_pos = np.asarray([state["pos"] for state in canbus.get_messages(scene_info["name"], "pose")[::5]])
+        #        min_len = min(len(imu_pos), new_episode_len)
+        #        interpolate_tracks[id]["state"]["position"][:min_len] = imu_pos[:min_len]
+        #    except:
+        #        logger.info("Fail to get canbus data for {}".format(scene_info["name"]))
 
         # velocity
         interpolate_tracks[id]["state"]["velocity"] = interpolate(
@@ -226,28 +230,35 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=5):
                 interpolate_tracks[id]["state"]["velocity"][k - 1] = np.array([0., 0.])
         # speed outlier check
         max_vel = np.max(np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1))
+        arg_max_vel = np.argmax(np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1))
+        avg_vel = np.mean(np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1))
+        len_vel = len(np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1))
         if max_vel > 30:
-            print("\nWARNING: Too large speed for {}: {}".format(id, max_vel))
+            track_too_fast_counter += 1
+            print("\nWARNING: Too large speed for {} ({}): {}(max) {}(avg) {}(len)".format(id, tracks[id]["type"], max_vel, avg_vel, len_vel))
+            print(interpolate_tracks[id]["state"]["velocity"][arg_max_vel])git 
+        else:
+            print("\nSpeed for {} ({}): {}".format(id, tracks[id]["type"], max_vel))
 
         # heading
         # then update position
         new_heading = interpolate_heading(track["state"]["heading"], track["state"]["valid"], new_valid)
         interpolate_tracks[id]["state"]["heading"] = new_heading
-        if id == "ego" and not scene_info.get("prediction", False):
-            assert "prediction" not in scene_info
-            # We can get it from canbus
-            try:
-                canbus = VODCanBus(dataroot=vod.dataroot)
-                imu_heading = np.asarray(
-                    [
-                        quaternion_yaw(Quaternion(state["orientation"]))
-                        for state in canbus.get_messages(scene_info["name"], "pose")[::5]
-                    ]
-                )
-                min_len = min(len(imu_heading), new_episode_len)
-                interpolate_tracks[id]["state"]["heading"][:min_len] = imu_heading[:min_len]
-            except:
-                logger.info("Fail to get canbus data for {}".format(scene_info["name"]))
+        # if id == "ego" and not scene_info.get("prediction", False):
+        #     assert "prediction" not in scene_info
+        #     # We can get it from canbus
+        #     try:
+        #         canbus = VODCanBus(dataroot=vod.dataroot)
+        #         imu_heading = np.asarray(
+        #             [
+        #                 quaternion_yaw(Quaternion(state["orientation"]))
+        #                 for state in canbus.get_messages(scene_info["name"], "pose")[::5]
+        #             ]
+        #         )
+        #         min_len = min(len(imu_heading), new_episode_len)
+        #         interpolate_tracks[id]["state"]["heading"][:min_len] = imu_heading[:min_len]
+        #     except:
+        #         logger.info("Fail to get canbus data for {}".format(scene_info["name"]))
 
         for k, v in track["state"].items():
             if k in ["valid", "heading", "position", "velocity"]:
@@ -256,6 +267,7 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=5):
                 interpolate_tracks[id]["state"][k] = interpolate(v, track["state"]["valid"], new_valid)
         # if id == "ego":
         # ego is valid all time, so we can calculate the velocity in this way
+    print("\n{} out of {} tracks show too high velocity".format(track_too_fast_counter, track_counter))
     return interpolate_tracks
 
 
@@ -286,7 +298,7 @@ def get_map_features(scene_info, vod: VOD, map_center, radius=500, points_distan
         #'traffic_light'
     ]
     # road segment includes all roadblocks (a list of lanes in the same direction), intersection and unstructured road
-
+    print(map_center)
     map_objs = map_api.get_records_in_radius(map_center[0], map_center[1], radius, layer_names)
 
     if not only_lane:
@@ -298,6 +310,9 @@ def get_map_features(scene_info, vod: VOD, map_center, radius=500, points_distan
             for polygon_token in seg_info["polygon_tokens"]:
                 polygon = map_api.extract_polygon(polygon_token)
                 polygons.append(polygon)
+        if not polygons:
+            return None
+        #print(polygons)
         # for id in map_objs["road_segment"]:
         #     seg_info = map_api.get("road_segment", id)
         #     assert seg_info["token"] == id
@@ -309,6 +324,7 @@ def get_map_features(scene_info, vod: VOD, map_center, radius=500, points_distan
         #     polygon = map_api.extract_polygon(seg_info["polygon_token"])
         #     polygons.append(polygon)
         polygons = [geom if geom.is_valid else geom.buffer(0) for geom in polygons]
+        #print(polygons)
         boundaries = gpd.GeoSeries(unary_union(polygons)).boundary.explode(index_parts=True)
         for idx, boundary in enumerate(boundaries[0]):
             block_points = np.array(list(i for i in zip(boundary.coords.xy[0], boundary.coords.xy[1])))
@@ -410,8 +426,8 @@ def convert_vod_scenario(
     Data will be interpolated to 0.1s time interval, while the time interval of original key frames are 0.5s.
     """
     if prediction:
-        past_num = int(past / 0.5)
-        future_num = int(future / 0.5)
+        past_num = int(past / 0.1)
+        future_num = int(future / 0.1)
         instance_token, sample_token = token.split("_")
         current_sample = last_sample = next_sample = vod.get("sample", sample_token)
         past_samples = []
@@ -440,7 +456,7 @@ def convert_vod_scenario(
     result = SD()
     result[SD.ID] = scene_info["name"]
     result[SD.VERSION] = "vod" + version
-    result[SD.LENGTH] = (len(frames) - 1) * 5 + 1
+    result[SD.LENGTH] = len(frames)
     result[SD.METADATA] = {}
     result[SD.METADATA]["dataset"] = "vod"
     result[SD.METADATA][SD.METADRIVE_PROCESSED] = False
@@ -451,9 +467,9 @@ def convert_vod_scenario(
     result[SD.METADATA][SD.ID] = scene_info["name"]
     result[SD.METADATA]["scenario_id"] = scene_info["name"]
     result[SD.METADATA]["sample_rate"] = scenario_log_interval
-    result[SD.METADATA][SD.TIMESTEP] = np.arange(0., (len(frames) - 1) * 0.5 + 0.1, 0.1)
+    result[SD.METADATA][SD.TIMESTEP] = np.linspace(0, (len(frames) - 1) * 0.1, len(frames))#np.arange(0., len(frames) * 0.1, 0.1)
     # interpolating to 0.1s interval
-    result[SD.TRACKS] = get_tracks_from_frames(vod, scene_info, frames, num_to_interpolate=5)
+    result[SD.TRACKS] = get_tracks_from_frames(vod, scene_info, frames, num_to_interpolate=1)
     result[SD.METADATA][SD.SDC_ID] = "ego"
 
     # No traffic light in vod at this stage
