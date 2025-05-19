@@ -177,7 +177,6 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=1):
         track_data = tracks.pop(track)
         obj_type = track_data[SD.METADATA]["type"]
         print("\nWARNING: Can not map type: {} to any MetaDrive Type".format(obj_type))
-
     new_episode_len = (episode_len - 1) * num_to_interpolate + 1
 
     # interpolate
@@ -200,12 +199,13 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=1):
                 else:
                     start_idx = k * num_to_interpolate
                 new_valid[start_idx:k * num_to_interpolate + 1] = 1
+        assert(track["state"]["valid"].all() == new_valid.all())
         interpolate_tracks[id]["state"]["valid"] = new_valid
-
-        # position
         interpolate_tracks[id]["state"]["position"] = interpolate(
             track["state"]["position"], track["state"]["valid"], new_valid
         )
+        if num_to_interpolate == 1:
+            assert(interpolate_tracks[id]["state"]["position"].all() == track["state"]["position"].all())
         # no CAN bus for view of delf dataset
         #if id == "ego" and not scene_info.get("prediction", False):
         #    assert "prediction" not in scene_info
@@ -224,21 +224,26 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=1):
         )
         vel = interpolate_tracks[id]["state"]["position"][1:] - interpolate_tracks[id]["state"]["position"][:-1]
         interpolate_tracks[id]["state"]["velocity"][:-1] = vel[..., :2] / 0.1
+        
         for k, valid in enumerate(new_valid[1:], start=1):
             if valid == 0 or not valid or abs(valid) < 1e-2:
                 interpolate_tracks[id]["state"]["velocity"][k] = np.array([0., 0.])
                 interpolate_tracks[id]["state"]["velocity"][k - 1] = np.array([0., 0.])
+        interpolate_tracks[id]["state"]["velocity"][0] = interpolate_tracks[id]["state"]["velocity"][1] #TODO: good way to remove speed outliers created by incorrect position 0
         # speed outlier check
         max_vel = np.max(np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1))
         arg_max_vel = np.argmax(np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1))
-        avg_vel = np.mean(np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1))
+        #avg_vel = np.median(np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1))
+        # Calculate the median of non-zero velocities
+        non_zero_velocities = np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1)
+        non_zero_velocities = non_zero_velocities[non_zero_velocities > 0.5]
+        avg_vel = np.median(non_zero_velocities) if len(non_zero_velocities) > 0 else 0
         len_vel = len(np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1))
-        if max_vel > 30:
-            track_too_fast_counter += 1
-            print("\nWARNING: Too large speed for {} ({}): {}(max) {}(avg) {}(len)".format(id, tracks[id]["type"], max_vel, avg_vel, len_vel))
-            print(interpolate_tracks[id]["state"]["velocity"][arg_max_vel])git 
-        else:
-            print("\nSpeed for {} ({}): {}".format(id, tracks[id]["type"], max_vel))
+        if max_vel > 35:
+            print("\nWARNING: Too large speed for {} ({}): {}(max) {}(non-0 median) {}(len) {}(argmax)".format(id, tracks[id]["type"], max_vel, avg_vel, len_vel, arg_max_vel))
+            print("position: {}".format(interpolate_tracks[id]["state"]["position"]))
+            print("mask: {}".format(new_valid))
+            print("velocity: {}".format(interpolate_tracks[id]["state"]["velocity"]))
 
         # heading
         # then update position
@@ -267,7 +272,6 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=1):
                 interpolate_tracks[id]["state"][k] = interpolate(v, track["state"]["valid"], new_valid)
         # if id == "ego":
         # ego is valid all time, so we can calculate the velocity in this way
-    print("\n{} out of {} tracks show too high velocity".format(track_too_fast_counter, track_counter))
     return interpolate_tracks
 
 
@@ -298,7 +302,7 @@ def get_map_features(scene_info, vod: VOD, map_center, radius=500, points_distan
         #'traffic_light'
     ]
     # road segment includes all roadblocks (a list of lanes in the same direction), intersection and unstructured road
-    print(map_center)
+
     map_objs = map_api.get_records_in_radius(map_center[0], map_center[1], radius, layer_names)
 
     if not only_lane:
@@ -310,9 +314,9 @@ def get_map_features(scene_info, vod: VOD, map_center, radius=500, points_distan
             for polygon_token in seg_info["polygon_tokens"]:
                 polygon = map_api.extract_polygon(polygon_token)
                 polygons.append(polygon)
-        if not polygons:
-            return None
-        #print(polygons)
+        if len(polygons) == 0:
+            return False
+
         # for id in map_objs["road_segment"]:
         #     seg_info = map_api.get("road_segment", id)
         #     assert seg_info["token"] == id
@@ -324,7 +328,7 @@ def get_map_features(scene_info, vod: VOD, map_center, radius=500, points_distan
         #     polygon = map_api.extract_polygon(seg_info["polygon_token"])
         #     polygons.append(polygon)
         polygons = [geom if geom.is_valid else geom.buffer(0) for geom in polygons]
-        #print(polygons)
+
         boundaries = gpd.GeoSeries(unary_union(polygons)).boundary.explode(index_parts=True)
         for idx, boundary in enumerate(boundaries[0]):
             block_points = np.array(list(i for i in zip(boundary.coords.xy[0], boundary.coords.xy[1])))
@@ -471,7 +475,6 @@ def convert_vod_scenario(
     # interpolating to 0.1s interval
     result[SD.TRACKS] = get_tracks_from_frames(vod, scene_info, frames, num_to_interpolate=1)
     result[SD.METADATA][SD.SDC_ID] = "ego"
-
     # No traffic light in vod at this stage
     result[SD.DYNAMIC_MAP_STATES] = {}
     if prediction:
@@ -487,7 +490,10 @@ def convert_vod_scenario(
 
     # map
     map_center = np.array(result[SD.TRACKS]["ego"]["state"]["position"][0])
-    result[SD.MAP_FEATURES] = get_map_features(scene_info, vod, map_center, map_radius, only_lane=only_lane)
+    for cur_pos in result[SD.TRACKS]["ego"]["state"]["position"]:
+        result[SD.MAP_FEATURES] = get_map_features(scene_info, vod, np.array(cur_pos), map_radius, only_lane=only_lane)
+        if result[SD.MAP_FEATURES]:
+            break
     del frames_scene_info
     del frames
     del scene_info
@@ -519,7 +525,7 @@ def get_vod_scenarios(dataroot, version, num_workers=2):
 
 def get_vod_prediction_split(dataroot, version, past, future, num_workers=2):
     def _get_vod():
-        return VOD(version="v1.0-mini" if "mini" in version else "v1.0-trainval", dataroot=dataroot)
+        return VOD(version="v1.0-test" if "test" in version else "v1.0-trainval", dataroot=dataroot)
 
     vod = _get_vod()
     return get_prediction_challenge_split(version, dataroot=dataroot), [vod for _ in range(num_workers)]

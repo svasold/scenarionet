@@ -1,6 +1,6 @@
 desc = "Build database from View of Delft scenarios"
 
-prediction_split = ["mini_train", "mini_val", "train", "train_val", "val"]
+prediction_split = ["mini_train", "mini_val", "train", "train_val", "val", "test"]
 scene_split = ["v1.0-mini", "v1.0-trainval", "v1.0-test"]
 
 if __name__ == "__main__":
@@ -27,7 +27,7 @@ if __name__ == "__main__":
         "--split",
         default="v1.0-mini",
         choices=scene_split + prediction_split,
-        help="Which splits of VOD data should be sued. If set to {}, it will convert the full log into scenarios"
+        help="Which splits of VOD data should be used. If set to {}, it will convert the full log into scenarios"
         " with 20 second episode length. If set to {}, it will convert segments used for VOD prediction"
         " challenge to scenarios, resulting in more converted scenarios. Generally, you should choose this "
         " parameter from {} to get complete scenarios for planning unless you want to use the converted scenario "
@@ -62,7 +62,6 @@ if __name__ == "__main__":
         scenarios, vod = get_vod_prediction_split(
             args.dataroot, version, args.past, args.future, args.num_workers
         )
-    print(len(scenarios))
     write_to_directory(
         convert_func=convert_vod_scenario,
         scenarios=scenarios,
