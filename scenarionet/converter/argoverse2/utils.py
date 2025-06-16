@@ -16,6 +16,7 @@ from metadrive.type import MetaDriveType
 from scenarionet.converter.argoverse2.type import get_traffic_obj_type, get_lane_type, get_lane_mark_type
 from av2.datasets.motion_forecasting import scenario_serialization
 from av2.map.map_api import ArgoverseStaticMap
+import av2.geometry.interpolate as interp_utils
 from typing import Final
 from shapely.geometry import Point, Polygon
 
@@ -133,7 +134,15 @@ def extract_map_features(map_features):
 
         center["type"] = get_lane_type(seg.lane_type)
 
-        polyline = map_features.get_lane_segment_centerline(seg.id)
+        #polyline = map_features.get_lane_segment_centerline(seg.id)
+        left_ln_bound = seg.left_lane_boundary.xyz
+        right_ln_bound = seg.right_lane_boundary.xyz
+
+        polyline, _ = interp_utils.compute_midpoint_line(
+            left_ln_boundary=left_ln_bound,
+            right_ln_boundary=right_ln_bound,
+            num_interp_pts=20,
+        )
         center["polyline"] = polyline.astype(np.float32)
 
         center["interpolating"] = True
