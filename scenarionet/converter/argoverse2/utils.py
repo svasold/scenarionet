@@ -68,7 +68,7 @@ def extract_tracks(tracks, sdc_idx, track_length):
             width = 1
 
         for _, state in enumerate(obj.object_states):
-            step_count = state.timestep
+            step_count = int(state.timestep)
             obj_state["state"]["position"][step_count][0] = state.position[0]
             obj_state["state"]["position"][step_count][1] = state.position[1]
             obj_state["state"]["position"][step_count][2] = 0
