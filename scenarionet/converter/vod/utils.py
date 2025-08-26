@@ -40,6 +40,8 @@ def get_metadrive_type(obj_type):
         md_type = MetaDriveType.PEDESTRIAN
     elif obj_type in BICYCLE_TYPE:
         md_type = MetaDriveType.CYCLIST
+    else:
+        md_type = MetaDriveType.OTHER
 
     # assert meta_type != MetaDriveType.UNSET and meta_type != "noise"
     return md_type, meta_type
