@@ -49,6 +49,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--overwrite", action="store_true", help="If the database_path exists, whether to overwrite it")
     parser.add_argument("--num_workers", type=int, default=8, help="number of workers to use")
+    parser.add_argument("--pad_scenario", type=bool, default=False, help="whether to pad the scenario to fixed length")
     args = parser.parse_args()
 
     overwrite = args.overwrite
@@ -75,4 +76,5 @@ if __name__ == "__main__":
         future=[args.future for _ in range(args.num_workers)],
         prediction=[version in prediction_split for _ in range(args.num_workers)],
         map_radius=[args.map_radius for _ in range(args.num_workers)],
+        pad_scenario=[args.pad_scenario for _ in range(args.num_workers)]
     )

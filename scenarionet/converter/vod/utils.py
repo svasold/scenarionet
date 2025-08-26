@@ -141,7 +141,7 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=1):
             ),
             metadata=dict(track_length=episode_len, type=MetaDriveType.UNSET, object_id=k, original_id=k)
         )
-        for k in list(all_objs)
+        for k in list(all_objs) if k != "padding_entry"
     }
 
     tracks_to_remove = set()
@@ -149,6 +149,8 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=1):
     for frame_idx in range(episode_len):
         # Record all agents' states (position, velocity, ...)
         for id, state in frames[frame_idx].items():
+            if id == "padding_entry":
+                continue
             # Fill type
             md_type, meta_type = get_metadrive_type(state["type"])
             tracks[id]["type"] = md_type
@@ -176,9 +178,8 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=1):
     for track in tracks_to_remove:
         track_data = tracks.pop(track)
         obj_type = track_data[SD.METADATA]["type"]
-        print("\nWARNING: Can not map type: {} to any MetaDrive Type".format(obj_type))
+        #print("\nWARNING: Can not map type: {} to any MetaDrive Type".format(obj_type))
     new_episode_len = (episode_len - 1) * num_to_interpolate + 1
-
     # interpolate
     interpolate_tracks = {}
     track_counter = 0
@@ -205,7 +206,22 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=1):
             track["state"]["position"], track["state"]["valid"], new_valid
         )
         if num_to_interpolate == 1:
-            assert(interpolate_tracks[id]["state"]["position"].all() == track["state"]["position"].all())
+            assert(np.allclose(interpolate_tracks[id]["state"]["position"], track["state"]["position"]))
+
+        indices_valid_entries = np.where(new_valid > 1e-2)[0]
+        if len(indices_valid_entries) >= 2:
+            index_first_valid = indices_valid_entries[0]
+            index_second_valid = indices_valid_entries[1]
+            if np.linalg.norm(interpolate_tracks[id]["state"]["position"][index_second_valid] - interpolate_tracks[id]["state"]["position"][index_first_valid]) > 10:
+                print("\nWARNING: Too large position change for {} ({}): {} -> {} at index {}".format(id, tracks[id]["type"], interpolate_tracks[id]["state"]["position"][index_first_valid], interpolate_tracks[id]["state"]["position"][index_second_valid], index_first_valid))
+                # set the first position to the second one
+                interpolate_tracks[id]["state"]["position"][index_first_valid] = interpolate_tracks[id]["state"]["position"][index_second_valid]
+
+        #interpolate_tracks[id]["state"]["velocity"][index_first_valid] = interpolate_tracks[id]["state"]["velocity"][index_second_valid] #TODO: good way to remove speed outliers created by incorrect position 0
+        
+
+        
+
         # no CAN bus for view of delf dataset
         #if id == "ego" and not scene_info.get("prediction", False):
         #    assert "prediction" not in scene_info
@@ -225,12 +241,13 @@ def get_tracks_from_frames(vod: VOD, scene_info, frames, num_to_interpolate=1):
         vel = interpolate_tracks[id]["state"]["position"][1:] - interpolate_tracks[id]["state"]["position"][:-1]
         interpolate_tracks[id]["state"]["velocity"][:-1] = vel[..., :2] / 0.1
         
+        if new_valid[0] == 0 or not new_valid[0] or abs(new_valid[0]) < 1e-2:
+            interpolate_tracks[id]["state"]["velocity"][0] = np.array([0., 0.])
         for k, valid in enumerate(new_valid[1:], start=1):
             if valid == 0 or not valid or abs(valid) < 1e-2:
                 interpolate_tracks[id]["state"]["velocity"][k] = np.array([0., 0.])
                 interpolate_tracks[id]["state"]["velocity"][k - 1] = np.array([0., 0.])
-        interpolate_tracks[id]["state"]["velocity"][0] = interpolate_tracks[id]["state"]["velocity"][1] #TODO: good way to remove speed outliers created by incorrect position 0
-        # speed outlier check
+       # speed outlier check
         max_vel = np.max(np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1))
         arg_max_vel = np.argmax(np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1))
         #avg_vel = np.median(np.linalg.norm(interpolate_tracks[id]["state"]["velocity"], axis=-1))
@@ -389,6 +406,7 @@ def get_map_features(scene_info, vod: VOD, map_center, radius=500, points_distan
             SD.LEFT_NEIGHBORS: [],
             SD.RIGHT_NEIGHBORS: [],
         }
+        #print("shape of polyline for lane {}: {}".format(id, ret[id][SD.POLYLINE].shape))
 
     # intersection lane
     for id in map_objs["lane_connector"]:
@@ -424,7 +442,7 @@ def get_map_features(scene_info, vod: VOD, map_center, radius=500, points_distan
 
 
 def convert_vod_scenario(
-    token, version, vod: VOD, map_radius=500, prediction=False, past=2, future=6, only_lane=False
+    token, version, vod: VOD, map_radius=500, prediction=False, past=2, future=6, only_lane=False, pad_scenario=False
 ):
     """
     Data will be interpolated to 0.1s time interval, while the time interval of original key frames are 0.5s.
@@ -441,12 +459,19 @@ def convert_vod_scenario(
                 break
             last_sample = vod.get("sample", last_sample["prev"])
             past_samples.append(parse_frame(last_sample, vod))
+        if len(past_samples) < past_num and pad_scenario:
+            padding_dict = {"padding_entry": 0}
+            past_samples = past_samples + [padding_dict] * (past_num - len(past_samples))
 
         for _ in range(future_num):
             if next_sample["next"] == "":
                 break
             next_sample = vod.get("sample", next_sample["next"])
             future_samples.append(parse_frame(next_sample, vod))
+        if len(future_samples) < future_num and pad_scenario:
+            padding_dict = {"padding_entry": 0}
+            future_samples = future_samples + [padding_dict] * (future_num - len(future_samples))
+
         frames = past_samples[::-1] + [parse_frame(current_sample, vod)] + future_samples
         scene_info = copy.copy(vod.get("scene", current_sample["scene_token"]))
         scene_info["name"] = scene_info["name"] + "_" + token
