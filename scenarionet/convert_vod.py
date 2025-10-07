@@ -39,13 +39,15 @@ if __name__ == "__main__":
         "--future",
         default=6,
         help="6 seconds by default. How many future seconds to predict. Only "
-        "available if split is chosen from {}".format(prediction_split)
+        "available if split is chosen from {}".format(prediction_split),
+        type=int
     )
     parser.add_argument(
         "--past",
         default=2,
         help="2 seconds by default. How many past seconds are used for prediction."
-        " Only available if split is chosen from {}".format(prediction_split)
+        " Only available if split is chosen from {}".format(prediction_split),
+        type=int
     )
     parser.add_argument("--overwrite", action="store_true", help="If the database_path exists, whether to overwrite it")
     parser.add_argument("--num_workers", type=int, default=8, help="number of workers to use")
